@@ -2,7 +2,7 @@
 
 Build and self-check, which changes nothing:
 
-    swiftc -O -o build/qobuz-ear-pause main.swift && build/qobuz-ear-pause --check
+    mkdir -p build && swiftc -O -o build/qobuz-ear-pause main.swift && build/qobuz-ear-pause --check
 
 Install or reinstall the LaunchAgent `local.qobuz-ear-pause`: `~/Projects/qobuz-ear-pause/install.sh`.
 It signs with `designated => identifier "local.qobuz-ear-pause"`, so the Accessibility grant
