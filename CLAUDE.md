@@ -21,6 +21,7 @@ them while Qobuz plays. A key press from a short-lived process has to stay alive
 posting, or the event is lost.
 
 Never suspend Qobuz with SIGSTOP, not even in a test. A system-defined event that reaches its
-media-key tap while it is stopped makes macOS disable the tap after about 2 s, and Qobuz
-registers its media keys only at launch (`main-darwin.js`), so they stay off until Qobuz
-restarts. `--check` then shows "Qobuz catches the key: no".
+media-key tap while it is stopped makes macOS disable the tap after about 2 s. On 2026-11-17 the
+tap was still off 5 minutes after Qobuz continued, and on again in the same process after the
+next unlock, half an hour later. Meanwhile `--check` shows "Qobuz catches the key: no" and the
+helper presses nothing.
