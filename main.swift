@@ -1,4 +1,5 @@
 import AppKit
+import CoreAudio
 import CoreGraphics
 import Darwin
 import Foundation
@@ -117,6 +118,7 @@ final class Session {
     let started = Date()
     var pressOffset: UInt64
     var presses = 1
+    var muted = false
 
     init(pid: pid_t, log: URL, earStatus: String?, pressOffset: UInt64) {
         self.pid = pid
@@ -128,6 +130,95 @@ final class Session {
 
 var session: Session?
 var lastChange: (from: String, to: String)?
+
+// Qobuz takes the play/pause key and does nothing with it while the screen is locked, so a pause
+// then mutes the output instead, along with each output that takes over until the unmute.
+var mutedOutputs: [AudioObjectID: [(element: UInt32, was: UInt32)]]?
+
+func screenIsLocked() -> Bool {
+    (CGSessionCopyCurrentDictionary() as? [String: Any])?["CGSSessionScreenIsLocked"] as? Bool
+        == true
+}
+
+func defaultOutput() -> AudioObjectID {
+    var address = AudioObjectPropertyAddress(
+        mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+        mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+    var device = AudioObjectID(kAudioObjectUnknown)
+    var size = UInt32(MemoryLayout<AudioObjectID>.size)
+    AudioObjectGetPropertyData(
+        AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &device)
+    return device
+}
+
+func deviceName(_ device: AudioObjectID) -> String {
+    var address = AudioObjectPropertyAddress(
+        mSelector: kAudioObjectPropertyName, mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kAudioObjectPropertyElementMain)
+    var name: Unmanaged<CFString>?
+    var size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+    guard AudioObjectGetPropertyData(device, &address, 0, nil, &size, &name) == noErr, let name
+    else { return "output \(device)" }
+    return name.takeRetainedValue() as String
+}
+
+func muteAddress(_ element: UInt32) -> AudioObjectPropertyAddress {
+    AudioObjectPropertyAddress(
+        mSelector: kAudioDevicePropertyMute, mScope: kAudioDevicePropertyScopeOutput,
+        mElement: element)
+}
+
+func muteState(_ device: AudioObjectID, _ element: UInt32) -> UInt32? {
+    var address = muteAddress(element)
+    var settable: DarwinBoolean = false
+    var value: UInt32 = 0
+    var size = UInt32(MemoryLayout<UInt32>.size)
+    guard AudioObjectHasProperty(device, &address),
+        AudioObjectIsPropertySettable(device, &address, &settable) == noErr, settable.boolValue,
+        AudioObjectGetPropertyData(device, &address, 0, nil, &size, &value) == noErr
+    else { return nil }
+    return value
+}
+
+@discardableResult
+func setMute(_ device: AudioObjectID, _ element: UInt32, _ value: UInt32) -> Bool {
+    var address = muteAddress(element)
+    var value = value
+    return AudioObjectSetPropertyData(
+        device, &address, 0, nil, UInt32(MemoryLayout<UInt32>.size), &value) == noErr
+}
+
+// Some outputs have a mute for each channel and none for the whole device. An output that comes
+// back, such as the AirPods, is muted again with its first setting kept.
+func muteOutput(_ device: AudioObjectID) {
+    guard var muted = mutedOutputs, device != kAudioObjectUnknown else { return }
+    if let saved = muted[device] {
+        for channel in saved { setMute(device, channel.element, 1) }
+        return
+    }
+    var saved: [(element: UInt32, was: UInt32)] = []
+    for element in [kAudioObjectPropertyElementMain, 1, 2] {
+        guard let was = muteState(device, element), setMute(device, element, 1) else { continue }
+        saved.append((element, was))
+        if element == kAudioObjectPropertyElementMain { break }
+    }
+    muted[device] = saved
+    mutedOutputs = muted
+    say(saved.isEmpty ? "could not mute \(deviceName(device))" : "muted \(deviceName(device))")
+}
+
+func muteOutputs() {
+    mutedOutputs = mutedOutputs ?? [:]
+    muteOutput(defaultOutput())
+}
+
+func unmuteOutputs() {
+    for (device, saved) in mutedOutputs ?? [:] where !saved.isEmpty {
+        for channel in saved { setMute(device, channel.element, channel.was) }
+        say("put back the mute setting of \(deviceName(device))")
+    }
+    mutedOutputs = nil
+}
 
 // macOS answers a permission check once per process, so a grant made while the helper runs
 // reaches only a new process. Each press therefore runs in one, which the helper does not wait
@@ -151,7 +242,7 @@ func press(onFailure: @escaping () -> Void = {}) -> Bool {
     return true
 }
 
-func pauseQobuzIfPlaying() -> Session? {
+func pauseQobuzIfPlaying(mute: Bool = false, earStatus: String? = lastChange?.from) -> Session? {
     guard let pid = qobuzPID() else {
         say("Qobuz is not running")
         return nil
@@ -165,9 +256,14 @@ func pauseQobuzIfPlaying() -> Session? {
         say("Qobuz is not playing (\(status ?? "no status"))")
         return nil
     }
+    let paused = Session(pid: pid, log: log, earStatus: earStatus, pressOffset: before.end)
+    if mute {
+        paused.muted = true
+        say("the screen is locked, where Qobuz ignores the key, so the output is muted instead")
+        muteOutputs()
+        return paused
+    }
     guard qobuzTakesKey(pid) else { return nil }
-    let paused = Session(
-        pid: pid, log: log, earStatus: lastChange?.from, pressOffset: before.end)
     guard press(onFailure: { if session === paused { session = nil } }) else { return nil }
     say("pressed play/pause")
     return paused
@@ -194,20 +290,26 @@ func watch(_ paused: Session, step: Int = 1) {
 func handlePause() {
     say("ear detection asked for a pause")
     resuming = nil
+    guard mutedOutputs == nil else { return }
     // An ear-out of both AirPods asks twice, and the watch covers the second.
     if let current = session, Date().timeIntervalSince(current.started) < checkInterval * Double(checks) {
         return
     }
-    guard let paused = pauseQobuzIfPlaying() else { return }
+    guard let paused = pauseQobuzIfPlaying(mute: screenIsLocked()) else { return }
     session = paused
-    watch(paused)
+    if !paused.muted { watch(paused) }
 }
 
 // Like macOS, resume only when nothing in Qobuz has changed since the helper paused it. The
 // short wait lets a route change from the AirPods coming back reach Qobuz's log first.
 func resume(_ paused: Session) {
     guard lastChange?.to == paused.earStatus else {
+        if paused.muted { session = paused }
         return say("AirPods came out again, so Qobuz was not resumed")
+    }
+    if paused.muted { return unmuteOutputs() }
+    if screenIsLocked() {
+        return say("the screen is locked, where Qobuz ignores the key, so it was not resumed")
     }
     guard qobuzPID() == paused.pid, let since = read(paused.log, from: paused.pressOffset) else {
         return say("Qobuz restarted since the pause, so it was not resumed")
@@ -257,6 +359,40 @@ func handleChange(from: String, to: String) {
     work.asyncAfter(deadline: .now() + resumeDelay) { resume(paused) }
 }
 
+// After the unlock the key reaches Qobuz again, which has played on muted. The output is unmuted
+// once Qobuz's log shows the pause, or after the last press regardless.
+let unlockDelay: TimeInterval = 0.5
+let pauseCheckDelay: TimeInterval = 1.5
+
+func handleUnlock() {
+    guard mutedOutputs != nil else { return }
+    guard let paused = session, paused.muted else { return unmuteOutputs() }
+    work.asyncAfter(deadline: .now() + unlockDelay) { pauseAfterUnlock(paused) }
+}
+
+func pauseAfterUnlock(_ paused: Session, presses: Int = 0, since start: UInt64? = nil) {
+    guard session === paused, paused.muted else { return }
+    guard qobuzPID() == paused.pid, let now = read(paused.log, from: nil) else {
+        session = nil
+        return unmuteOutputs()
+    }
+    let start = start ?? now.end
+    guard isPlaying(statuses(in: now.text).last) else {
+        paused.muted = false
+        paused.pressOffset = start
+        return unmuteOutputs()
+    }
+    guard presses < maxPresses, qobuzTakesKey(paused.pid), press() else {
+        session = nil
+        if presses == maxPresses { say("Qobuz did not pause after the unlock") }
+        return unmuteOutputs()
+    }
+    say("screen unlocked, pressed play/pause")
+    work.asyncAfter(deadline: .now() + pauseCheckDelay) {
+        pauseAfterUnlock(paused, presses: presses + 1, since: start)
+    }
+}
+
 // A press on an AirPod goes to the Now Playing app, and with none macOS launched Music for it.
 // The helper is that app while Qobuz runs, and presses the key for Qobuz when a command reaches
 // it and mediaremoted logged it as coming from bluetoothd. Ear detection's Pause reaches the
@@ -274,6 +410,11 @@ func pressForButton() {
     resuming = nil
     guard let pid = qobuzPID() else { return say("AirPods button pressed, but Qobuz is not running") }
     say("AirPods button pressed")
+    if mutedOutputs != nil { return unmuteOutputs() }
+    if screenIsLocked() {
+        session = pauseQobuzIfPlaying(mute: true, earStatus: nil)
+        return
+    }
     guard qobuzTakesKey(pid), press() else { return }
     say("pressed play/pause")
 }
@@ -309,6 +450,7 @@ func reportQobuzState() {
             state = isPlaying(status) ? .playing : .paused
         }
     }
+    if state == .playing, mutedOutputs != nil { state = .paused }
     guard state != reported else { return }
     let claim = state == .paused && reported != .playing
     reported = state
@@ -321,6 +463,18 @@ func reportQobuzState() {
 }
 
 let reporter = DispatchSource.makeTimerSource(queue: work)
+
+func followUnlockAndOutput() {
+    DistributedNotificationCenter.default().addObserver(
+        forName: Notification.Name("com.apple.screenIsUnlocked"), object: nil, queue: nil
+    ) { _ in work.async(execute: handleUnlock) }
+    var address = AudioObjectPropertyAddress(
+        mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+        mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+    AudioObjectAddPropertyListenerBlock(
+        AudioObjectID(kAudioObjectSystemObject), &address, work
+    ) { _, _ in muteOutput(defaultOutput()) }
+}
 
 func becomeNowPlaying() {
     let center = MPRemoteCommandCenter.shared()
@@ -344,6 +498,10 @@ func check() {
     print("Qobuz status:            \(status ?? "unknown")")
     print("Qobuz catches the key:   \(pid.map(catchesMediaKeys) == true ? "yes" : "no")")
     print("allowed to press keys:   \(CGPreflightPostEventAccess() ? "yes" : "no")")
+    print("screen locked:           \(screenIsLocked() ? "yes" : "no")")
+    let output = defaultOutput()
+    let mute = muteState(output, kAudioObjectPropertyElementMain).map { $0 == 1 ? "muted" : "on" }
+    print("output:                  \(deviceName(output)), \(mute ?? "no device mute")")
 }
 
 enum EarEvent: Equatable {
@@ -381,6 +539,7 @@ let stream = Process()
 
 // launchd stops the helper with SIGTERM, and an exit leaves `log stream` running on its own.
 func quit() -> Never {
+    work.sync { unmuteOutputs() }
     if stream.isRunning { stream.terminate() }
     exit(0)
 }
@@ -407,6 +566,7 @@ func watchEars() -> Never {
     terminate.resume()
     say("watching AirPods ear detection")
     becomeNowPlaying()
+    followUnlockAndOutput()
     // Remote commands arrive through the main run loop, so the stream is read on another thread.
     Thread.detachNewThread { readEvents(from: pipe) }
     RunLoop.main.run()
@@ -435,7 +595,7 @@ switch CommandLine.arguments.dropFirst().first {
 case nil: watchEars()
 case "--check": check()
 case "--pause-now":
-    if work.sync(execute: pauseQobuzIfPlaying) != nil { Thread.sleep(forTimeInterval: 1) }
+    if work.sync(execute: { pauseQobuzIfPlaying() }) != nil { Thread.sleep(forTimeInterval: 1) }
 case "--press":
     guard CGPreflightPostEventAccess() else { exit(notAllowed) }
     pressPlayPause()
