@@ -17,7 +17,8 @@ Screen locks and unlocks:
 `/usr/bin/log show --last 1h --predicate 'process == "loginwindow" AND (eventMessage CONTAINS "_postShieldNotifications" OR eventMessage CONTAINS "lowerShieldWindow")'`.
 
 `--pause-now` and any key press pause the music the user is listening to, so ask before running
-them while Qobuz plays. A key press from a short-lived process has to stay alive about 0.5 s after
+them while Qobuz plays. `pressDockItem` opens Qobuz's Dock menu, which shows on screen unless the
+screen is locked, so a test of it locks the screen first, on the user's go. A key press from a short-lived process has to stay alive about 0.5 s after
 posting, or the event is lost.
 
 Never suspend Qobuz with SIGSTOP, not even in a test. A system-defined event that reaches its

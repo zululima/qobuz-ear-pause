@@ -131,8 +131,9 @@ final class Session {
 var session: Session?
 var lastChange: (from: String, to: String)?
 
-// Qobuz takes the play/pause key and does nothing with it while the screen is locked, so a pause
-// then mutes the output instead, along with each output that takes over until the unmute.
+// Qobuz takes the play/pause key and does nothing with it while the screen is locked, so when its
+// Dock menu fails too, a pause then mutes the output instead, along with each output that takes
+// over until the unmute.
 var mutedOutputs: [AudioObjectID: [(element: UInt32, was: UInt32)]]?
 
 func screenIsLocked() -> Bool {
@@ -242,7 +243,58 @@ func press(onFailure: @escaping () -> Void = {}) -> Bool {
     return true
 }
 
-func pauseQobuzIfPlaying(mute: Bool = false, earStatus: String? = lastChange?.from) -> Session? {
+func axValue(_ element: AXUIElement, _ name: String) -> AnyObject? {
+    var value: AnyObject?
+    return AXUIElementCopyAttributeValue(element, name as CFString, &value) == .success
+        ? value : nil
+}
+
+func axChildren(_ element: AXUIElement) -> [AXUIElement] {
+    axValue(element, kAXChildrenAttribute) as? [AXUIElement] ?? []
+}
+
+func axTitle(_ element: AXUIElement) -> String { axValue(element, kAXTitleAttribute) as? String ?? "" }
+
+// The Play and Pause items of Qobuz's Dock menu still work while the screen is locked, when
+// Qobuz ignores the key. Opened through Accessibility, the menu stays behind the lock screen;
+// unlocked it would show, so the key is used then.
+func pressDockItem(_ titles: Set<String>) -> Bool {
+    guard let dock = NSRunningApplication.runningApplications(
+        withBundleIdentifier: "com.apple.dock"
+    ).first else { return false }
+    let app = AXUIElementCreateApplication(dock.processIdentifier)
+    AXUIElementSetMessagingTimeout(app, 1)
+    guard let tile = axChildren(app).flatMap(axChildren).first(where: { axTitle($0) == "Qobuz" }),
+        AXUIElementPerformAction(tile, kAXShowMenuAction as CFString) == .success
+    else {
+        say("could not open Qobuz's Dock menu")
+        return false
+    }
+    var menu: AXUIElement?
+    for _ in 0..<20 where menu == nil {
+        menu = axChildren(tile).first { axValue($0, kAXRoleAttribute) as? String == kAXMenuRole }
+        if menu == nil { Thread.sleep(forTimeInterval: 0.05) }
+    }
+    guard let menu else {
+        say("Qobuz's Dock menu did not open")
+        return false
+    }
+    guard let item = axChildren(menu).first(where: { titles.contains(axTitle($0)) }),
+        AXUIElementPerformAction(item, kAXPressAction as CFString) == .success
+    else {
+        AXUIElementPerformAction(menu, kAXCancelAction as CFString)
+        say("Qobuz's Dock menu has no \(titles.sorted().joined(separator: " or ")) item")
+        return false
+    }
+    say("pressed \(axTitle(item)) in Qobuz's Dock menu")
+    return true
+}
+
+func pressPlayPause(_ pid: pid_t, dockItems: Set<String> = ["Play", "Pause"]) -> Bool {
+    screenIsLocked() ? pressDockItem(dockItems) : qobuzTakesKey(pid) && press()
+}
+
+func pauseQobuzIfPlaying(locked: Bool = false) -> Session? {
     guard let pid = qobuzPID() else {
         say("Qobuz is not running")
         return nil
@@ -256,8 +308,10 @@ func pauseQobuzIfPlaying(mute: Bool = false, earStatus: String? = lastChange?.fr
         say("Qobuz is not playing (\(status ?? "no status"))")
         return nil
     }
-    let paused = Session(pid: pid, log: log, earStatus: earStatus, pressOffset: before.end)
-    if mute {
+    let paused = Session(
+        pid: pid, log: log, earStatus: lastChange?.from, pressOffset: before.end)
+    if locked {
+        if pressDockItem(["Pause"]) { return paused }
         paused.muted = true
         say("the screen is locked, where Qobuz ignores the key, so the output is muted instead")
         muteOutputs()
@@ -281,7 +335,9 @@ func watch(_ paused: Session, step: Int = 1) {
         {
             paused.pressOffset = since.end
             paused.presses += 1
-            if press() { say("Qobuz went back to \(latest), pressed play/pause again") }
+            if pressPlayPause(paused.pid, dockItems: ["Pause"]) {
+                say("Qobuz went back to \(latest), pressed play/pause again")
+            }
         }
         if step < checks { watch(paused, step: step + 1) }
     }
@@ -295,7 +351,7 @@ func handlePause() {
     if let current = session, Date().timeIntervalSince(current.started) < checkInterval * Double(checks) {
         return
     }
-    guard let paused = pauseQobuzIfPlaying(mute: screenIsLocked()) else { return }
+    guard let paused = pauseQobuzIfPlaying(locked: screenIsLocked()) else { return }
     session = paused
     if !paused.muted { watch(paused) }
 }
@@ -308,9 +364,6 @@ func resume(_ paused: Session) {
         return say("AirPods came out again, so Qobuz was not resumed")
     }
     if paused.muted { return unmuteOutputs() }
-    if screenIsLocked() {
-        return say("the screen is locked, where Qobuz ignores the key, so it was not resumed")
-    }
     guard qobuzPID() == paused.pid, let since = read(paused.log, from: paused.pressOffset) else {
         return say("Qobuz restarted since the pause, so it was not resumed")
     }
@@ -319,7 +372,7 @@ func resume(_ paused: Session) {
         let seen = changes.isEmpty ? "no status" : changes.joined(separator: ", ")
         return say("Qobuz changed since the pause (\(seen)), so it was not resumed")
     }
-    guard qobuzTakesKey(paused.pid), press() else { return }
+    guard pressPlayPause(paused.pid, dockItems: ["Play"]) else { return }
     say("pressed play/pause to resume")
     paused.pressOffset = since.end
     resuming = paused
@@ -341,7 +394,7 @@ func confirmResume(_ resumed: Session, step: Int = 1, reloaded: Bool = false) {
         }
         if reloaded {
             resuming = nil
-            guard qobuzTakesKey(resumed.pid), press() else { return }
+            guard pressPlayPause(resumed.pid, dockItems: ["Play"]) else { return }
             return say("Qobuz reloaded the track without playing, pressed play/pause again")
         }
         if step < checks {
@@ -411,11 +464,7 @@ func pressForButton() {
     guard let pid = qobuzPID() else { return say("AirPods button pressed, but Qobuz is not running") }
     say("AirPods button pressed")
     if mutedOutputs != nil { return unmuteOutputs() }
-    if screenIsLocked() {
-        session = pauseQobuzIfPlaying(mute: true, earStatus: nil)
-        return
-    }
-    guard qobuzTakesKey(pid), press() else { return }
+    guard pressPlayPause(pid) else { return }
     say("pressed play/pause")
 }
 

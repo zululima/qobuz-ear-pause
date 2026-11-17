@@ -43,17 +43,22 @@ clone https://github.com/zululima/qobuz-ear-pause into ~/Projects/qobuz-ear-paus
 
 ## While the screen is locked
 
-Qobuz takes the play/pause key and does nothing with it while the screen is locked, so the helper
-mutes the sound instead:
+Qobuz takes the play/pause key and does nothing with it while the screen is locked, but the Play
+and Pause items of its Dock menu still work then. So while the screen is locked, the helper opens
+that menu through Accessibility, behind the lock screen, and presses Pause or Play wherever it
+would press the key: for an ear-out, when the AirPods are back in, and for a press on an AirPod.
+Pausing and resuming then work as when the screen is unlocked. Unlocked, the menu would show on
+screen, so the helper keeps to the key then.
 
-- An ear-out while Qobuz plays mutes the Mac's current output, and each output that takes over
-  while muted, such as the speakers once both AirPods are out. Qobuz plays on silently.
-- When the AirPods are back in as before, the helper puts back each output's mute setting and the
-  music carries on from where it has got to.
-- When you unlock with the AirPods still out, the helper presses play/pause, which Qobuz takes
-  again, and puts back the mute settings once Qobuz's log shows the pause, or after three presses.
-- A press on an AirPod mutes Qobuz too, and a second press unmutes it. Qobuz cannot be started
-  while the screen is locked.
+When the Dock menu has no Pause item, such as after an update that renames it, an ear-out with the
+screen locked mutes the sound instead:
+
+- The helper mutes the Mac's current output, and each output that takes over while muted, such as
+  the speakers once both AirPods are out. Qobuz plays on silently.
+- When the AirPods are back in as before, it puts back each output's mute setting and the music
+  carries on from where it has got to. A press on an AirPod does the same.
+- When you unlock with the AirPods still out, it presses play/pause, which Qobuz takes again, and
+  puts back the mute settings once Qobuz's log shows the pause, or after three presses.
 - Other sounds are muted along with Qobuz. Stopping the helper puts back the mute settings, but
   a crash leaves the outputs muted.
 
