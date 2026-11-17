@@ -16,6 +16,11 @@ codesign --force --sign - --identifier "$label" \
   -r="designated => identifier \"$label\"" "$here/build/qobuz-ear-pause"
 
 launchctl bootout "$domain/$label" 2>/dev/null || true
+# bootout returns before the old agent is gone, and a bootstrap until then fails with error 5.
+for _ in {1..50}; do
+  launchctl print "$domain/$label" >/dev/null 2>&1 || break
+  sleep 0.1
+done
 install -m 755 "$here/build/qobuz-ear-pause" "$bin"
 
 cat > "$plist" <<EOF

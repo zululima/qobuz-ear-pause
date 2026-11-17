@@ -193,6 +193,7 @@ func watch(_ paused: Session, step: Int = 1) {
 
 func handlePause() {
     say("ear detection asked for a pause")
+    resuming = nil
     // An ear-out of both AirPods asks twice, and the watch covers the second.
     if let current = session, Date().timeIntervalSince(current.started) < checkInterval * Double(checks) {
         return
@@ -218,6 +219,34 @@ func resume(_ paused: Session) {
     }
     guard qobuzTakesKey(paused.pid), press() else { return }
     say("pressed play/pause to resume")
+    paused.pressOffset = since.end
+    resuming = paused
+    confirmResume(paused)
+}
+
+// Qobuz drops a press that reaches it while it reloads the track for the AirPods' audio route,
+// so once a reload has opened the track and Qobuz still does not play, the helper presses again.
+var resuming: Session?
+
+func confirmResume(_ resumed: Session, step: Int = 1, reloaded: Bool = false) {
+    work.asyncAfter(deadline: .now() + checkInterval) {
+        guard resuming === resumed, lastChange?.to == resumed.earStatus,
+            let since = read(resumed.log, from: resumed.pressOffset)
+        else { return }
+        if statuses(in: since.text).contains(where: { isPlaying($0) }) {
+            resuming = nil
+            return
+        }
+        if reloaded {
+            resuming = nil
+            guard qobuzTakesKey(resumed.pid), press() else { return }
+            return say("Qobuz reloaded the track without playing, pressed play/pause again")
+        }
+        if step < checks {
+            confirmResume(
+                resumed, step: step + 1, reloaded: since.text.contains("Open music for track"))
+        }
+    }
 }
 
 func handleChange(from: String, to: String) {
@@ -242,6 +271,7 @@ func isRecent(_ date: Date?) -> Bool {
 
 func pressForButton() {
     session = nil
+    resuming = nil
     guard let pid = qobuzPID() else { return say("AirPods button pressed, but Qobuz is not running") }
     say("AirPods button pressed")
     guard qobuzTakesKey(pid), press() else { return }

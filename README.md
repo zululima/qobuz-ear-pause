@@ -30,6 +30,9 @@ clone https://github.com/zululima/qobuz-ear-pause into ~/Projects/qobuz-ear-paus
   only if Qobuz's log shows no status change since the helper paused it, as macOS does for apps it
   pauses.
   macOS never resumes Qobuz itself, since Qobuz does not report its playback to Now Playing.
+- Qobuz drops a press that arrives while it reloads the track for the AirPods' audio route. So when
+  Qobuz's log shows the reload opening the track within 5 s of the resume, and Qobuz still does not
+  play, the helper presses once more.
 - It never presses the key when Qobuz has no media-key tap, since macOS would then hand the key to
   Apple Music.
 - While Qobuz runs, the helper is the Now Playing app: every second it reports Qobuz's status from
@@ -37,6 +40,12 @@ clone https://github.com/zululima/qobuz-ear-pause into ~/Projects/qobuz-ear-paus
   `mediaremoted` also logged that command as coming from `bluetoothd`, the helper presses
   play/pause for Qobuz. Ear detection's own Pause reaches the helper too and is left to the steps
   above.
+
+## Limits
+
+While the screen is locked, Qobuz takes the play/pause key and does nothing with it, so the
+helper cannot pause or resume it until you unlock. Qobuz then plays on through the Mac's speakers
+when both AirPods come out.
 
 ## Install
 
