@@ -115,15 +115,17 @@ final class Session {
     let pid: pid_t
     let log: URL
     let earStatus: String?
+    let output: String?
     let started = Date()
     var pressOffset: UInt64
     var presses = 1
     var muted = false
 
-    init(pid: pid_t, log: URL, earStatus: String?, pressOffset: UInt64) {
+    init(pid: pid_t, log: URL, earStatus: String?, output: String?, pressOffset: UInt64) {
         self.pid = pid
         self.log = log
         self.earStatus = earStatus
+        self.output = output
         self.pressOffset = pressOffset
     }
 }
@@ -161,6 +163,17 @@ func deviceName(_ device: AudioObjectID) -> String {
     guard AudioObjectGetPropertyData(device, &address, 0, nil, &size, &name) == noErr, let name
     else { return "output \(device)" }
     return name.takeRetainedValue() as String
+}
+
+func deviceUID(_ device: AudioObjectID) -> String? {
+    var address = AudioObjectPropertyAddress(
+        mSelector: kAudioDevicePropertyDeviceUID, mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kAudioObjectPropertyElementMain)
+    var uid: Unmanaged<CFString>?
+    var size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+    guard AudioObjectGetPropertyData(device, &address, 0, nil, &size, &uid) == noErr, let uid
+    else { return nil }
+    return uid.takeRetainedValue() as String
 }
 
 func muteAddress(_ element: UInt32) -> AudioObjectPropertyAddress {
@@ -309,7 +322,8 @@ func pauseQobuzIfPlaying(locked: Bool = false) -> Session? {
         return nil
     }
     let paused = Session(
-        pid: pid, log: log, earStatus: lastChange?.from, pressOffset: before.end)
+        pid: pid, log: log, earStatus: lastChange?.from, output: deviceUID(defaultOutput()),
+        pressOffset: before.end)
     if locked {
         if pressDockItem(["Pause"]) { return paused }
         paused.muted = true
@@ -358,12 +372,21 @@ func handlePause() {
 
 // Like macOS, resume only when nothing in Qobuz has changed since the helper paused it. The
 // short wait lets a route change from the AirPods coming back reach Qobuz's log first.
-func resume(_ paused: Session) {
+func resume(_ paused: Session, step: Int = 1) {
     guard lastChange?.to == paused.earStatus else {
         if paused.muted { session = paused }
         return say("AirPods came out again, so Qobuz was not resumed")
     }
     if paused.muted { return unmuteOutputs() }
+    // A call on the iPhone can take the AirPods while one is out. Resumed then, Qobuz plays on the
+    // speakers, and macOS does not move audio that already plays back to the AirPods.
+    let output = defaultOutput()
+    guard deviceUID(output) == paused.output else {
+        guard step < checks else {
+            return say("the output is \(deviceName(output)), so Qobuz was not resumed")
+        }
+        return work.asyncAfter(deadline: .now() + checkInterval) { resume(paused, step: step + 1) }
+    }
     guard qobuzPID() == paused.pid, let since = read(paused.log, from: paused.pressOffset) else {
         return say("Qobuz restarted since the pause, so it was not resumed")
     }

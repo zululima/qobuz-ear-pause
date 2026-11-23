@@ -30,6 +30,9 @@ clone https://github.com/zululima/qobuz-ear-pause into ~/Projects/qobuz-ear-paus
   only if Qobuz's log shows no status change since the helper paused it, as macOS does for apps it
   pauses.
   macOS never resumes Qobuz itself, since Qobuz does not report its playback to Now Playing.
+- It also waits up to 5 s for the Mac's output to be back on the device Qobuz played on, and
+  otherwise does not resume. A call answered on the iPhone takes the AirPods, and Qobuz resumed
+  then plays on the speakers, where macOS leaves it after the call.
 - Qobuz drops a press that arrives while it reloads the track for the AirPods' audio route. So when
   Qobuz's log shows the reload opening the track within 5 s of the resume, and Qobuz still does not
   play, the helper presses once more.
@@ -113,7 +116,8 @@ tail -f ~/Library/Logs/qobuz-ear-pause.log
   helper presses the key only for commands from `bluetoothd`. A double or triple press, for the
   next or previous track, does nothing either.
 - Like macOS, it pauses when the first AirPod comes out. Resuming has no time limit: AirPods put
-  back an hour later still resume, as long as nothing in Qobuz changed meanwhile.
+  back an hour later still resume, as long as nothing in Qobuz changed meanwhile and they are the
+  Mac's output again.
 
 ## Licence
 
