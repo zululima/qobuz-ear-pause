@@ -11,7 +11,8 @@ to an older build: the user then removes and re-adds it, since toggling keeps th
 
 Logs: `~/Library/Logs/qobuz-ear-pause.log`. Ear-outs in the system log:
 `/usr/bin/log show --last 1h --predicate 'process == "mediaremoted" AND eventMessage CONTAINS "ear status"'`.
-Presses on an AirPod, and which app is Now Playing:
+Presses on an AirPod, the Pause `cloudpaird` sends when the iPhone takes the AirPods, and which
+app is Now Playing:
 `/usr/bin/log show --last 1h --predicate 'process == "mediaremoted" AND (eventMessage BEGINSWITH "Received command from client" OR eventMessage CONTAINS "ActiveNowPlayingClient changed")'`.
 Screen locks and unlocks:
 `/usr/bin/log show --last 1h --predicate 'process == "loginwindow" AND (eventMessage CONTAINS "_postShieldNotifications" OR eventMessage CONTAINS "lowerShieldWindow")'`.

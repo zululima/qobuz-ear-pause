@@ -8,7 +8,8 @@ import MediaPlayer
 // mediaremoted logs every AirPods ear status change, and the Pause it sends to the playing app
 // when Automatic Ear Detection sees an ear-out. The Qobuz desktop app ignores that Pause, and
 // macOS never resumes Qobuz since Qobuz does not report its playback to Now Playing. It also
-// logs each command bluetoothd passes on from a press on an AirPod.
+// logs each command bluetoothd passes on from a press on an AirPod, and the Pause cloudpaird sends
+// when another device, such as the iPhone for a call, takes the AirPods.
 let earPredicate = """
     process == "mediaremoted" AND (\
     (eventMessage BEGINSWITH "[AccessoryController] Sending command" \
@@ -16,7 +17,9 @@ let earPredicate = """
     OR (eventMessage BEGINSWITH "[AccessoryController] Device " \
     AND eventMessage CONTAINS " ear status changed from ") \
     OR (eventMessage BEGINSWITH "Received command from client" \
-    AND eventMessage CONTAINS "bundleIdentifier = com.apple.bluetoothd"))
+    AND (eventMessage CONTAINS "bundleIdentifier = com.apple.bluetoothd" \
+    OR (eventMessage CONTAINS "bundleIdentifier = com.apple.cloudpaird" \
+    AND eventMessage CONTAINS "command = Pause"))))
     """
 let qobuzLogDir = NSHomeDirectory() + "/Library/Application Support/Qobuz/logs"
 let checkInterval: TimeInterval = 0.5
@@ -307,7 +310,7 @@ func pressPlayPause(_ pid: pid_t, dockItems: Set<String> = ["Play", "Pause"]) ->
     screenIsLocked() ? pressDockItem(dockItems) : qobuzTakesKey(pid) && press()
 }
 
-func pauseQobuzIfPlaying(locked: Bool = false) -> Session? {
+func pauseQobuzIfPlaying(locked: Bool = false, resumable: Bool = true) -> Session? {
     guard let pid = qobuzPID() else {
         say("Qobuz is not running")
         return nil
@@ -322,7 +325,8 @@ func pauseQobuzIfPlaying(locked: Bool = false) -> Session? {
         return nil
     }
     let paused = Session(
-        pid: pid, log: log, earStatus: lastChange?.from, output: deviceUID(defaultOutput()),
+        pid: pid, log: log, earStatus: resumable ? lastChange?.from : nil,
+        output: deviceUID(defaultOutput()),
         pressOffset: before.end)
     if locked {
         if pressDockItem(["Pause"]) { return paused }
@@ -357,15 +361,18 @@ func watch(_ paused: Session, step: Int = 1) {
     }
 }
 
-func handlePause() {
-    say("ear detection asked for a pause")
+// A call on the iPhone takes the AirPods without an ear-out, and Qobuz plays on the speakers.
+// macOS gives the AirPods back without a Play, so a pause for that is never resumed.
+func handlePause(_ reason: String, resumable: Bool = true) {
+    say(reason)
     resuming = nil
     guard mutedOutputs == nil else { return }
     // An ear-out of both AirPods asks twice, and the watch covers the second.
     if let current = session, Date().timeIntervalSince(current.started) < checkInterval * Double(checks) {
         return
     }
-    guard let paused = pauseQobuzIfPlaying(locked: screenIsLocked()) else { return }
+    guard let paused = pauseQobuzIfPlaying(locked: screenIsLocked(), resumable: resumable)
+    else { return }
     session = paused
     if !paused.muted { watch(paused) }
 }
@@ -471,8 +478,8 @@ func pauseAfterUnlock(_ paused: Session, presses: Int = 0, since start: UInt64? 
 
 // A press on an AirPod goes to the Now Playing app, and with none macOS launched Music for it.
 // The helper is that app while Qobuz runs, and presses the key for Qobuz when a command reaches
-// it and mediaremoted logged it as coming from bluetoothd. Ear detection's Pause reaches the
-// helper too but has no such line, and stays with handlePause.
+// it and mediaremoted logged it as coming from bluetoothd. The Pauses of ear detection and
+// cloudpaird reach the helper too but have no such line, and stay with handlePause.
 let pressWindow: TimeInterval = 2
 var buttonHeard: Date?
 var commandReached: Date?
@@ -580,6 +587,7 @@ enum EarEvent: Equatable {
     case pause
     case changed(from: String, to: String)
     case button
+    case taken
 }
 
 // The first line of `log stream` repeats the predicate, so only parsed events count.
@@ -597,6 +605,9 @@ func earEvent(in line: String) -> EarEvent? {
         let range = message.range(of: "command = ")
     {
         let command = message[range.upperBound...].prefix { $0.isLetter }
+        if message.contains("bundleIdentifier = com.apple.cloudpaird") {
+            return command == "Pause" ? .taken : nil
+        }
         return ["Play", "Pause", "TogglePlayPause"].contains(command) ? .button : nil
     }
     guard message.hasPrefix("[AccessoryController] Device "),
@@ -653,9 +664,10 @@ func readEvents(from pipe: Pipe) -> Never {
         guard let line, let event = earEvent(in: String(cString: line)) else { continue }
         work.async {
             switch event {
-            case .pause: handlePause()
+            case .pause: handlePause("ear detection asked for a pause")
             case .changed(let from, let to): handleChange(from: from, to: to)
             case .button: handleButton()
+            case .taken: handlePause("another device took the AirPods", resumable: false)
             }
         }
     }

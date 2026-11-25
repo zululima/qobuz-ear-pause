@@ -1,7 +1,8 @@
 # qobuz-ear-pause
 
-Pauses the Qobuz desktop app on macOS when you take your AirPods out of your ears, and makes a
-press on an AirPod pause and resume Qobuz instead of opening Apple Music.
+Pauses the Qobuz desktop app on macOS when you take your AirPods out of your ears or your iPhone
+takes them for a call, and makes a press on an AirPod pause and resume Qobuz instead of opening
+Apple Music.
 
 AirPods Automatic Ear Detection makes macOS send a Pause command to the playing app. The Qobuz
 desktop app (8.3.0, Electron 32) receives it and ignores it, then reloads the track and plays on
@@ -33,6 +34,11 @@ clone https://github.com/zululima/qobuz-ear-pause into ~/Projects/qobuz-ear-paus
 - It also waits up to 5 s for the Mac's output to be back on the device Qobuz played on, and
   otherwise does not resume. A call answered on the iPhone takes the AirPods, and Qobuz resumed
   then plays on the speakers, where macOS leaves it after the call.
+- When another device takes the AirPods, such as the iPhone for a call, `cloudpaird` asks the Now
+  Playing app to pause (`Received command from client ... com.apple.cloudpaird ... command =
+  Pause`), and Qobuz plays on through the speakers. The helper pauses Qobuz then too, with the same
+  checks and repeat presses as for an ear-out. It does not resume Qobuz afterwards, since macOS
+  sends no Play when the AirPods come back.
 - Qobuz drops a press that arrives while it reloads the track for the AirPods' audio route. So when
   Qobuz's log shows the reload opening the track within 5 s of the resume, and Qobuz still does not
   play, the helper presses once more.
@@ -41,20 +47,21 @@ clone https://github.com/zululima/qobuz-ear-pause into ~/Projects/qobuz-ear-paus
 - While Qobuz runs, the helper is the Now Playing app: every second it reports Qobuz's status from
   the same log as its own, titled "Qobuz". A press on an AirPod then reaches the helper, and when
   `mediaremoted` also logged that command as coming from `bluetoothd`, the helper presses
-  play/pause for Qobuz. Ear detection's own Pause reaches the helper too and is left to the steps
-  above.
+  play/pause for Qobuz. The Pauses of ear detection and `cloudpaird` reach the helper too and are
+  left to the steps above.
 
 ## While the screen is locked
 
 Qobuz takes the play/pause key and does nothing with it while the screen is locked, but the Play
 and Pause items of its Dock menu still work then. So while the screen is locked, the helper opens
 that menu through Accessibility, behind the lock screen, and presses Pause or Play wherever it
-would press the key: for an ear-out, when the AirPods are back in, and for a press on an AirPod.
+would press the key: for an ear-out or a call, when the AirPods are back in, and for a press on an
+AirPod.
 Pausing and resuming then work as when the screen is unlocked. Unlocked, the menu would show on
 screen, so the helper keeps to the key then.
 
-When the Dock menu has no Pause item, such as after an update that renames it, an ear-out with the
-screen locked mutes the sound instead:
+When the Dock menu has no Pause item, such as after an update that renames it, an ear-out or a call
+with the screen locked mutes the sound instead:
 
 - The helper mutes the Mac's current output, and each output that takes over while muted, such as
   the speakers once both AirPods are out. Qobuz plays on silently.
